@@ -1286,21 +1286,58 @@ function _loadExcelJS(){
     document.head.appendChild(s);
   });
 }
-/* 把图片 URL 转成 ArrayBuffer，base64 也兼容；失败返回 null */
+/* 把图片 URL 转成 ArrayBuffer。手机微信 WKWebView 对 fetch 有兼容问题，多方法 fallback */
 async function _imgToBuffer(url){
   if(!url) return null;
-  try{
-    if(url.startsWith('data:')){
+  /* base64 data URL 直接解码 */
+  if(url.startsWith('data:')){
+    try{
       const b64 = url.split(',')[1]||'';
       const bin = atob(b64);
       const buf = new Uint8Array(bin.length);
       for(let i=0;i<bin.length;i++) buf[i]=bin.charCodeAt(i);
       return buf.buffer;
-    }
-    const resp = await fetch(url, {mode:'cors'});
-    if(!resp.ok) return null;
-    return await resp.arrayBuffer();
-  }catch(e){ console.warn('图片获取失败', url, e.message); return null; }
+    }catch(e){ return null; }
+  }
+  /* 方法 1: 标准 fetch（不强制 cors mode，让浏览器自己判断同源） */
+  try{
+    const resp = await fetch(url);
+    if(resp.ok) return await resp.arrayBuffer();
+  }catch(e){ console.warn('[fetch fail]', url, e.message); }
+  /* 方法 2: XMLHttpRequest（WKWebView 上 fetch 偶尔失败，XHR 更稳） */
+  try{
+    return await new Promise((resolve, reject)=>{
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.responseType = 'arraybuffer';
+      xhr.timeout = 15000;
+      xhr.onload = ()=>{ (xhr.status>=200 && xhr.status<300) ? resolve(xhr.response) : reject(new Error('xhr status '+xhr.status)); };
+      xhr.onerror = ()=>reject(new Error('xhr network'));
+      xhr.ontimeout = ()=>reject(new Error('xhr timeout'));
+      xhr.send();
+    });
+  }catch(e){ console.warn('[xhr fail]', url, e.message); }
+  /* 方法 3: Image 元素 + Canvas（同源时画 canvas 不被 CORS 拦） */
+  try{
+    return await new Promise((resolve, reject)=>{
+      const im = new Image();
+      im.onload = ()=>{
+        try{
+          const cvs = document.createElement('canvas');
+          cvs.width = im.naturalWidth || 200;
+          cvs.height = im.naturalHeight || 200;
+          cvs.getContext('2d').drawImage(im, 0, 0);
+          cvs.toBlob((b)=>{
+            if(!b) return reject(new Error('toBlob null'));
+            b.arrayBuffer().then(resolve).catch(reject);
+          }, 'image/jpeg', 0.85);
+        }catch(err){ reject(err); }
+      };
+      im.onerror = ()=>reject(new Error('img load fail'));
+      im.src = url;
+    });
+  }catch(e){ console.warn('[canvas fail]', url, e.message); }
+  return null;
 }
 function _imgExt(url){
   const u = (url||'').toLowerCase();
@@ -1472,14 +1509,7 @@ async function downloadQuoteExcel(){
     ws.getRow(R).height=30;
     const headerRow=R; R++;
 
-    /* —— 商品行（并发抓图片）—— */
-    const imgPromises = ids.map(async (id, idx)=>{
-      const p=selected[id].p;
-      if(!p.img) return null;
-      const buf=await _imgToBuffer(p.img);
-      return buf?{idx, buf, ext:_imgExt(p.img)}:null;
-    });
-
+    /* —— 商品行 —— */
     const dataStart=R;
     ids.forEach((id, idx)=>{
       const s=selected[id], p=s.p;
@@ -1519,17 +1549,22 @@ async function downloadQuoteExcel(){
       R++;
     });
 
-    /* 等所有图片下载好，再嵌入 workbook */
-    const imgResults = await Promise.all(imgPromises);
-    imgResults.forEach((r)=>{
-      if(!r) return;
-      const imgId = wb.addImage({buffer:r.buf, extension:r.ext});
-      const rowIdx = dataStart - 1 + r.idx; /* exceljs 0-based */
-      ws.addImage(imgId, {
-        tl:{col:0.15, row:rowIdx + 0.08},
-        ext:{width:80, height:80}
-      });
-    });
+    /* 串行抓图 + 写入 workbook（手机 WeChat 一次太多并发请求会失败/超时）*/
+    for(let i=0; i<ids.length; i++){
+      const p = selected[ids[i]].p;
+      if(!p.img) continue;
+      btn.textContent = '⏳ 加载图片 '+(i+1)+'/'+ids.length+'...';
+      try{
+        const buf = await _imgToBuffer(p.img);
+        if(!buf) continue;
+        const imgId = wb.addImage({buffer:buf, extension:_imgExt(p.img)});
+        ws.addImage(imgId, {
+          tl:{col:0.15, row:(dataStart - 1 + i) + 0.08},
+          ext:{width:80, height:80}
+        });
+      }catch(e){ console.warn('图片 '+p.id+' 嵌入失败', e); }
+    }
+    btn.textContent='⏳ 生成中...';
 
     /* 空行 */
     applyTo(R,1,NCOL,c=>styleCell(c,null,C.cream,null,null));
