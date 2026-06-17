@@ -1275,185 +1275,162 @@ async function copyQuoteImg(){
   }
 }
 
-/* ─────── Excel 导出（懒加载 xlsx-js-style，支持样式） ─────── */
-function _loadXLSX(){
-  if(window.XLSX) return Promise.resolve(window.XLSX);
+/* ─────── Excel 导出（懒加载 exceljs，支持嵌入产品图片） ─────── */
+function _loadExcelJS(){
+  if(window.ExcelJS) return Promise.resolve(window.ExcelJS);
   return new Promise((resolve,reject)=>{
     const s=document.createElement('script');
-    s.src='https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
-    s.onload=()=>resolve(window.XLSX);
+    s.src='https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    s.onload=()=>resolve(window.ExcelJS);
     s.onerror=()=>reject(new Error('Excel 库加载失败'));
     document.head.appendChild(s);
   });
 }
+/* 把图片 URL 转成 ArrayBuffer，base64 也兼容；失败返回 null */
+async function _imgToBuffer(url){
+  if(!url) return null;
+  try{
+    if(url.startsWith('data:')){
+      const b64 = url.split(',')[1]||'';
+      const bin = atob(b64);
+      const buf = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) buf[i]=bin.charCodeAt(i);
+      return buf.buffer;
+    }
+    const resp = await fetch(url, {mode:'cors'});
+    if(!resp.ok) return null;
+    return await resp.arrayBuffer();
+  }catch(e){ console.warn('图片获取失败', url, e.message); return null; }
+}
+function _imgExt(url){
+  const u = (url||'').toLowerCase();
+  if(u.endsWith('.png')||u.startsWith('data:image/png')) return 'png';
+  if(u.endsWith('.gif')||u.startsWith('data:image/gif')) return 'gif';
+  return 'jpeg';
+}
+
 async function downloadQuoteExcel(){
   const ids=Object.keys(selected);
   if(!ids.length){alert('请先选择至少一件商品。');return;}
   const btn=document.getElementById('dlXlsBtn');
-  btn.textContent='⏳ 生成中...'; btn.disabled=true;
+  const originalText='📊 保存/分享 Excel';
+  btn.textContent='⏳ 生成中（含图片）...'; btn.disabled=true;
   try{
-    const XLSX=await _loadXLSX();
-    /* ===== 计算折扣 ===== */
+    const ExcelJS=await _loadExcelJS();
     const totalQty=ids.reduce((s,id)=>s+(selected[id].qty||0),0);
-    /* 纯询价单：不计算价格、不显示折扣，仅汇总询价数量 */
-    /* ===== 各尺寸合计 ===== */
     const szTot={};
     ids.forEach(id=>{const s=selected[id];const k=s.size||'—';szTot[k]=(szTot[k]||0)+(s.qty||0);});
-    const szSummary=Object.entries(szTot).map(([sz,pcs])=>{
-      return sz+' cm：'+pcs+'副';
-    }).join('  |  ');
-
+    const szSummary=Object.entries(szTot).map(([sz,pcs])=>sz+' cm：'+pcs+'副').join('  |  ');
     const today=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'});
 
-    /* ===== 样式预设 ===== */
+    /* 配色（注意 exceljs 颜色用 8 位 ARGB） */
+    const C={red:'FF8B0000', redBright:'FFC41E3A', redDark:'FF4A0000',
+             gold:'FFC9921B', goldLt:'FFFFF7E6', goldBg:'FFF8E5C2',
+             cream:'FFFFF8F2', cream2:'FFFFFCF5', bord:'FFE8D0C0',
+             txt:'FF2C1810', muted:'FF8B5E4A', white:'FFFFFFFF'};
     const FONT='Microsoft YaHei';
-    const C={red:'8B0000', redBright:'C41E3A', redDark:'4A0000', gold:'C9921B', goldLt:'FFF7E6',
-             goldBg:'F8E5C2', cream:'FFF8F2', cream2:'FFFCF5', bord:'E8D0C0', txt:'2C1810',
-             muted:'8B5E4A', white:'FFFFFF', amber:'FFE9CC'};
-    const thin   ={style:'thin',  color:{rgb:C.bord}};
-    const gthin  ={style:'thin',  color:{rgb:C.gold}};
-    const dthin  ={style:'thin',  color:{rgb:C.red}};
-    const fullB  ={top:thin,bottom:thin,left:thin,right:thin};
-    const gFullB ={top:gthin,bottom:gthin,left:gthin,right:gthin};
-    const S={
-      title:{font:{bold:true,sz:22,color:{rgb:C.red},name:FONT},
-             alignment:{horizontal:'center',vertical:'center'},
-             fill:{fgColor:{rgb:C.cream}}},
-      sub  :{font:{italic:true,sz:11,color:{rgb:C.muted},name:'Arial'},
-             alignment:{horizontal:'center',vertical:'center'},
-             fill:{fgColor:{rgb:C.cream}}},
-      sectionHd:{font:{bold:true,sz:12,color:{rgb:C.white},name:FONT},
-             alignment:{horizontal:'left',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.red}},border:gFullB},
-      lbl  :{font:{bold:true,color:{rgb:C.red},name:FONT},
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.goldLt}},border:fullB},
-      val  :{font:{color:{rgb:C.txt},name:FONT},
-             alignment:{horizontal:'left',vertical:'center',indent:1,wrapText:true},
-             fill:{fgColor:{rgb:C.cream2}},border:fullB},
-      discL:{font:{bold:true,sz:11,color:{rgb:C.white},name:FONT},
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.red}},border:gFullB},
-      discV:{font:{bold:true,sz:12,color:{rgb:C.redBright},name:FONT},
-             alignment:{horizontal:'left',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.goldBg}},border:gFullB},
-      th   :{font:{bold:true,sz:11,color:{rgb:C.white},name:FONT},
-             alignment:{horizontal:'center',vertical:'center'},
-             fill:{fgColor:{rgb:C.redDark}},border:gFullB},
-      tdC  :{font:{color:{rgb:C.txt},name:FONT,sz:10},
-             alignment:{horizontal:'center',vertical:'center'},border:fullB},
-      tdL  :{font:{color:{rgb:C.txt},name:FONT,sz:10},
-             alignment:{horizontal:'left',vertical:'center',indent:1,wrapText:true},border:fullB},
-      tdR  :{font:{color:{rgb:C.txt},name:FONT,sz:10},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},border:fullB},
-      tdRStrike:{font:{color:{rgb:C.muted},name:FONT,sz:10,strike:true},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},border:fullB},
-      tdRGold:{font:{bold:true,color:{rgb:'A86A00'},name:FONT,sz:10},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},border:fullB},
-      tdRRed:{font:{bold:true,color:{rgb:C.redBright},name:FONT,sz:10},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},border:fullB},
-      totalL:{font:{bold:true,sz:13,color:{rgb:C.white},name:FONT},
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.red}},border:gFullB},
-      totalV:{font:{bold:true,sz:14,color:{rgb:C.red},name:FONT},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.goldBg}},border:gFullB},
-      note :{font:{italic:true,sz:10,color:{rgb:C.muted},name:FONT},
-             alignment:{horizontal:'left',vertical:'center',indent:1,wrapText:true},
-             fill:{fgColor:{rgb:C.cream}}},
-      spacer:{fill:{fgColor:{rgb:C.cream}}},
-      zebra:{font:{color:{rgb:C.txt},name:FONT,sz:10},
-             alignment:{horizontal:'center',vertical:'center'},
-             fill:{fgColor:{rgb:C.cream2}},border:fullB},
-      zebraL:{font:{color:{rgb:C.txt},name:FONT,sz:10},
-             alignment:{horizontal:'left',vertical:'center',indent:1,wrapText:true},
-             fill:{fgColor:{rgb:C.cream2}},border:fullB},
-      zebraR:{font:{color:{rgb:C.txt},name:FONT,sz:10},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.cream2}},border:fullB},
-      zebraRStrike:{font:{color:{rgb:C.muted},name:FONT,sz:10,strike:true},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.cream2}},border:fullB},
-      zebraRGold:{font:{bold:true,color:{rgb:'A86A00'},name:FONT,sz:10},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.cream2}},border:fullB},
-      zebraRRed:{font:{bold:true,color:{rgb:C.redBright},name:FONT,sz:10},numFmt:'¥#,##0.00',
-             alignment:{horizontal:'right',vertical:'center',indent:1},
-             fill:{fgColor:{rgb:C.cream2}},border:fullB}
-    };
+    const bThin={style:'thin',color:{argb:C.bord}};
+    const bGold={style:'thin',color:{argb:C.gold}};
+    const fullB={top:bThin,bottom:bThin,left:bThin,right:bThin};
+    const fullGB={top:bGold,bottom:bGold,left:bGold,right:bGold};
 
-    /* ===== 构建工作表 ===== */
-    const ws={};
-    const merges=[];
-    const rowHeights=[];
-    let R=0; /* 当前行索引 */
-    const NCOL=8;          /* A..H */
-    const LASTCOL='H';
+    /* ===== 创建 workbook ===== */
+    const wb=new ExcelJS.Workbook();
+    wb.creator='沝森纸艺'; wb.title='批发询价单'; wb.created=new Date();
+    const ws=wb.addWorksheet('询价单',{properties:{tabColor:{argb:C.red}}});
 
-    function setCell(addr, value, style, opts){
-      const cell={v:value};
-      if(opts&&opts.t)cell.t=opts.t;
-      else cell.t = (typeof value==='number')?'n':'s';
-      if(style)cell.s=style;
-      ws[addr]=cell;
-    }
-    function setRow(row, cells, style){
-      cells.forEach((v,i)=>{
-        const addr=XLSX.utils.encode_cell({r:row,c:i});
-        let st=style;
-        if(typeof style==='function')st=style(i,v);
-        setCell(addr, v==null?'':v, st);
-      });
-      /* 填满整行，让背景色完整 */
-      for(let i=cells.length;i<NCOL;i++){
-        const addr=XLSX.utils.encode_cell({r:row,c:i});
-        let st=style;
-        if(typeof style==='function')st=style(i,'');
-        setCell(addr,'',st);
+    const NCOL=9;
+    ws.columns=[
+      {width:14},  /* A 产品图 */
+      {width:10},  /* B 货号 */
+      {width:26},  /* C 名称 */
+      {width:15},  /* D 分类 */
+      {width:11},  /* E 规格 */
+      {width:12},  /* F 箱规 */
+      {width:8},   /* G 箱数 */
+      {width:13},  /* H 零售单价 */
+      {width:10}   /* I 数量 */
+    ];
+
+    function applyTo(rowNum, fromCol, toCol, fn){
+      for(let c=fromCol;c<=toCol;c++){
+        const cell=ws.getCell(rowNum, c);
+        fn(cell);
       }
     }
+    function styleCell(cell, font, fill, align, border){
+      if(font) cell.font=font;
+      if(fill) cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:fill}};
+      if(align) cell.alignment=align;
+      if(border) cell.border=border;
+    }
 
-    /* —— 标题行 —— */
-    setCell('A'+(R+1), '沝森纸艺 · 批发询价单', S.title);
-    for(let c=1;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}), '', S.title);
-    merges.push({s:{r:R,c:0},e:{r:R,c:NCOL-1}}); rowHeights[R]={hpt:38}; R++;
+    let R=1;
 
-    setCell('A'+(R+1), 'ZISEN PAPER ART · Wholesale Quotation', S.sub);
-    for(let c=1;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}), '', S.sub);
-    merges.push({s:{r:R,c:0},e:{r:R,c:NCOL-1}}); rowHeights[R]={hpt:18}; R++;
+    /* 标题 */
+    ws.mergeCells(R,1,R,NCOL);
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.cream,null,null));
+    ws.getCell(R,1).value='沝森纸艺 · 批发询价单';
+    ws.getCell(R,1).font={name:FONT,bold:true,size:22,color:{argb:C.red}};
+    ws.getCell(R,1).alignment={horizontal:'center',vertical:'middle'};
+    ws.getRow(R).height=38; R++;
+
+    /* 副标题 */
+    ws.mergeCells(R,1,R,NCOL);
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.cream,null,null));
+    ws.getCell(R,1).value='ZISEN PAPER ART · Wholesale Inquiry';
+    ws.getCell(R,1).font={name:'Arial',italic:true,size:11,color:{argb:C.muted}};
+    ws.getCell(R,1).alignment={horizontal:'center',vertical:'middle'};
+    ws.getRow(R).height=18; R++;
 
     /* 空行 */
-    setRow(R,[''],S.spacer); rowHeights[R]={hpt:6}; R++;
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.cream,null,null));
+    ws.getRow(R).height=6; R++;
 
-    /* —— 供应商信息块 —— */
-    setCell('A'+(R+1),'🏭 供应商信息',S.sectionHd);
-    for(let c=1;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}),'',S.sectionHd);
-    merges.push({s:{r:R,c:0},e:{r:R,c:NCOL-1}}); rowHeights[R]={hpt:24}; R++;
+    /* 供应商信息节头 */
+    ws.mergeCells(R,1,R,NCOL);
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.red,null,fullGB));
+    ws.getCell(R,1).value='🏭 供应商信息';
+    ws.getCell(R,1).font={name:FONT,bold:true,size:12,color:{argb:C.white}};
+    ws.getCell(R,1).alignment={horizontal:'left',vertical:'middle',indent:1};
+    ws.getRow(R).height=24; R++;
 
-    const infoRows=[
+    const supplierInfo=[
       ['公司名称','狮纸匠（抚州市东乡区）工艺品有限公司'],
       ['工厂地址','江西省抚州市东乡区东红工业园区 999 号'],
-      ['联系人',  '刘雪松'],
-      ['邮箱',    'xuesongliu458@gmail.com'],
-      ['微信号',  'july1262918549'],
+      ['联系人','刘雪松'],
+      ['邮箱','xuesongliu458@gmail.com'],
+      ['微信号','july1262918549'],
       ['WhatsApp','+86 198-4203-7693']
     ];
-    infoRows.forEach(([k,v])=>{
-      setCell('A'+(R+1),k,S.lbl);
-      setCell('B'+(R+1),v,S.val);
-      for(let c=2;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}),'',S.val);
-      merges.push({s:{r:R,c:1},e:{r:R,c:NCOL-1}});
-      rowHeights[R]={hpt:20};
-      R++;
+    supplierInfo.forEach(([k,v])=>{
+      ws.getCell(R,1).value=k;
+      ws.getCell(R,1).font={name:FONT,bold:true,color:{argb:C.red}};
+      ws.getCell(R,1).fill={type:'pattern',pattern:'solid',fgColor:{argb:C.goldLt}};
+      ws.getCell(R,1).alignment={horizontal:'right',vertical:'middle',indent:1};
+      ws.getCell(R,1).border=fullB;
+      ws.mergeCells(R,2,R,NCOL);
+      applyTo(R,2,NCOL,c=>{
+        c.fill={type:'pattern',pattern:'solid',fgColor:{argb:C.cream2}};
+        c.border=fullB;
+      });
+      ws.getCell(R,2).value=v;
+      ws.getCell(R,2).font={name:FONT,color:{argb:C.txt}};
+      ws.getCell(R,2).alignment={horizontal:'left',vertical:'middle',indent:1,wrapText:true};
+      ws.getRow(R).height=20; R++;
     });
 
     /* 空行 */
-    setRow(R,[''],S.spacer); rowHeights[R]={hpt:6}; R++;
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.cream,null,null));
+    ws.getRow(R).height=6; R++;
 
-    /* —— 询价摘要块 —— */
-    setCell('A'+(R+1),'📋 询价摘要',S.sectionHd);
-    for(let c=1;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}),'',S.sectionHd);
-    merges.push({s:{r:R,c:0},e:{r:R,c:NCOL-1}}); rowHeights[R]={hpt:24}; R++;
+    /* 询价摘要节头 */
+    ws.mergeCells(R,1,R,NCOL);
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.red,null,fullGB));
+    ws.getCell(R,1).value='📋 询价摘要';
+    ws.getCell(R,1).font={name:FONT,bold:true,size:12,color:{argb:C.white}};
+    ws.getCell(R,1).alignment={horizontal:'left',vertical:'middle',indent:1};
+    ws.getRow(R).height=24; R++;
 
     const sumRows=[
       ['询价日期', today],
@@ -1462,60 +1439,109 @@ async function downloadQuoteExcel(){
       ['各尺寸合计', szSummary || '—']
     ];
     sumRows.forEach(([k,v])=>{
-      setCell('A'+(R+1),k,S.lbl);
-      setCell('B'+(R+1),v,S.val);
-      for(let c=2;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}),'',S.val);
-      merges.push({s:{r:R,c:1},e:{r:R,c:NCOL-1}});
-      rowHeights[R]={hpt:20};
-      R++;
+      ws.getCell(R,1).value=k;
+      ws.getCell(R,1).font={name:FONT,bold:true,color:{argb:C.red}};
+      ws.getCell(R,1).fill={type:'pattern',pattern:'solid',fgColor:{argb:C.goldLt}};
+      ws.getCell(R,1).alignment={horizontal:'right',vertical:'middle',indent:1};
+      ws.getCell(R,1).border=fullB;
+      ws.mergeCells(R,2,R,NCOL);
+      applyTo(R,2,NCOL,c=>{
+        c.fill={type:'pattern',pattern:'solid',fgColor:{argb:C.cream2}};
+        c.border=fullB;
+      });
+      ws.getCell(R,2).value=v;
+      ws.getCell(R,2).font={name:FONT,color:{argb:C.txt}};
+      ws.getCell(R,2).alignment={horizontal:'left',vertical:'middle',indent:1,wrapText:true};
+      ws.getRow(R).height=20; R++;
     });
 
     /* 空行 */
-    setRow(R,[''],S.spacer); rowHeights[R]={hpt:8}; R++;
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.cream,null,null));
+    ws.getRow(R).height=8; R++;
 
-    /* —— 商品明细表头 —— */
-    const headers=['货号','产品名称','分类','规格(cm)','箱规(副/箱)','箱数','零售单价','数量(副)'];
-    setRow(R, headers, S.th); rowHeights[R]={hpt:30};
-    const headerRowIdx=R;
-    R++;
+    /* 商品表头 */
+    const headers=['产品图','货号','产品名称','分类','规格(cm)','箱规(副/箱)','箱数','零售单价','数量(副)'];
+    headers.forEach((h,i)=>{
+      const cell=ws.getCell(R, i+1);
+      cell.value=h;
+      cell.font={name:FONT,bold:true,size:11,color:{argb:C.white}};
+      cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:C.redDark}};
+      cell.alignment={horizontal:'center',vertical:'middle'};
+      cell.border=fullGB;
+    });
+    ws.getRow(R).height=30;
+    const headerRow=R; R++;
 
-    /* —— 商品行：纯询价，只保留零售单价作为参考，不做折扣/小计 —— */
-    ids.forEach((id,idx)=>{
+    /* —— 商品行（并发抓图片）—— */
+    const imgPromises = ids.map(async (id, idx)=>{
+      const p=selected[id].p;
+      if(!p.img) return null;
+      const buf=await _imgToBuffer(p.img);
+      return buf?{idx, buf, ext:_imgExt(p.img)}:null;
+    });
+
+    const dataStart=R;
+    ids.forEach((id, idx)=>{
       const s=selected[id], p=s.p;
       const bq=getBoxQty(s.size);
       const boxes=s.boxes||(bq&&s.qty?Math.ceil(s.qty/bq):'');
       const retailNum=(typeof s.price==='number')?s.price:null;
-      const zebra = idx%2===1;
-      const sC = zebra?S.zebra:S.tdC;
-      const sL = zebra?S.zebraL:S.tdL;
-      /* 零售单价：正常红色 ¥ 格式，不划线 */
-      const sRetail = zebra?S.zebraRRed:S.tdRRed;
+      const zebra=idx%2===1;
+      const bgArgb=zebra?C.cream2:null;
 
-      const cells=[p.id, p.n, (p.c||'').trim(), s.size?(s.size+' cm'):'', bq||'', boxes,
-                   retailNum,
-                   s.qty||''];
-      cells.forEach((v,i)=>{
-        const addr=XLSX.utils.encode_cell({r:R,c:i});
-        let style;
-        if(i===1) style=sL;
-        else if(i===6) style=sRetail;
-        else style=sC;
-        const cell={v:v==null?'':v};
-        cell.t=(typeof v==='number')?'n':'s';
-        cell.s=style;
-        ws[addr]=cell;
-      });
-      rowHeights[R]={hpt:24};
+      ws.getRow(R).height=78; /* 行高足够放 75x75 图 */
+
+      const setStd=(c, val, align, isPrice)=>{
+        const cell=ws.getCell(R, c);
+        cell.value=val;
+        cell.font={name:FONT,size:10,color:{argb:isPrice?C.redBright:C.txt},bold:!!isPrice};
+        if(bgArgb) cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:bgArgb}};
+        cell.alignment={horizontal:align,vertical:'middle',indent:align==='left'?1:0,wrapText:true};
+        cell.border=fullB;
+        if(isPrice) cell.numFmt='¥#,##0.00';
+      };
+
+      /* A: 产品图（先空，下面 addImage） */
+      const imgCell=ws.getCell(R,1);
+      imgCell.value='';
+      if(bgArgb) imgCell.fill={type:'pattern',pattern:'solid',fgColor:{argb:bgArgb}};
+      imgCell.border=fullB;
+      imgCell.alignment={horizontal:'center',vertical:'middle'};
+
+      setStd(2, p.id, 'center', false);
+      setStd(3, p.n, 'left', false);
+      setStd(4, (p.c||'').trim(), 'center', false);
+      setStd(5, s.size?(s.size+' cm'):'', 'center', false);
+      setStd(6, bq||'', 'center', false);
+      setStd(7, boxes, 'center', false);
+      setStd(8, retailNum, 'right', true);
+      setStd(9, s.qty||'', 'center', false);
       R++;
     });
 
-    /* 空行 */
-    setRow(R,[''],S.spacer); rowHeights[R]={hpt:8}; R++;
+    /* 等所有图片下载好，再嵌入 workbook */
+    const imgResults = await Promise.all(imgPromises);
+    imgResults.forEach((r)=>{
+      if(!r) return;
+      const imgId = wb.addImage({buffer:r.buf, extension:r.ext});
+      const rowIdx = dataStart - 1 + r.idx; /* exceljs 0-based */
+      ws.addImage(imgId, {
+        tl:{col:0.15, row:rowIdx + 0.08},
+        ext:{width:80, height:80}
+      });
+    });
 
-    /* —— 备注块 —— */
-    setCell('A'+(R+1),'📌 询价备注',S.sectionHd);
-    for(let c=1;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}),'',S.sectionHd);
-    merges.push({s:{r:R,c:0},e:{r:R,c:NCOL-1}}); rowHeights[R]={hpt:24}; R++;
+    /* 空行 */
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.cream,null,null));
+    ws.getRow(R).height=8; R++;
+
+    /* 备注节头 */
+    ws.mergeCells(R,1,R,NCOL);
+    applyTo(R,1,NCOL,c=>styleCell(c,null,C.red,null,fullGB));
+    ws.getCell(R,1).value='📌 询价备注';
+    ws.getCell(R,1).font={name:FONT,bold:true,size:12,color:{argb:C.white}};
+    ws.getCell(R,1).alignment={horizontal:'left',vertical:'middle',indent:1};
+    ws.getRow(R).height=24; R++;
 
     const notes=[
       '① 此为询价单，最终报价以客服回复为准。',
@@ -1524,34 +1550,26 @@ async function downloadQuoteExcel(){
       '④ 联系方式：微信 july1262918549   |   WhatsApp +86 198-4203-7693'
     ];
     notes.forEach(n=>{
-      setCell('A'+(R+1), n, S.note);
-      for(let c=1;c<NCOL;c++) setCell(XLSX.utils.encode_cell({r:R,c}),'',S.note);
-      merges.push({s:{r:R,c:0},e:{r:R,c:NCOL-1}});
-      rowHeights[R]={hpt:22};
-      R++;
+      ws.mergeCells(R,1,R,NCOL);
+      applyTo(R,1,NCOL,c=>{
+        c.fill={type:'pattern',pattern:'solid',fgColor:{argb:C.cream}};
+      });
+      ws.getCell(R,1).value=n;
+      ws.getCell(R,1).font={name:FONT,italic:true,size:10,color:{argb:C.muted}};
+      ws.getCell(R,1).alignment={horizontal:'left',vertical:'middle',indent:1,wrapText:true};
+      ws.getRow(R).height=22; R++;
     });
 
-    /* —— 工作表元数据 —— */
-    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:R-1,c:NCOL-1}});
-    ws['!cols']=[
-      {wch:10},{wch:28},{wch:16},{wch:11},{wch:13},{wch:8},{wch:13},{wch:10}
-    ];
-    ws['!rows']=rowHeights;
-    ws['!merges']=merges;
-    ws['!freeze']={xSplit:0,ySplit:headerRowIdx+1};
-    ws['!margins']={left:0.5,right:0.5,top:0.6,bottom:0.6,header:0.3,footer:0.3};
+    /* 冻结表头 */
+    ws.views=[{state:'frozen', xSplit:0, ySplit:headerRow}];
 
-    /* ===== 生成文件 ===== */
-    const wb=XLSX.utils.book_new();
-    wb.Props={Title:'沝森纸艺 批发询价单',Author:'沝森纸艺',Company:'狮纸匠工艺品',CreatedDate:new Date()};
-    XLSX.utils.book_append_sheet(wb,ws,'询价单');
-
+    /* ===== 输出 ===== */
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     const safeDate=today.replace(/[\/\-\s年月]/g,'').replace(/日$/,'');
     const fname='沝森纸艺_询价单_'+safeDate+'.xlsx';
-    /* 生成 ArrayBuffer 而不是直接下载，方便走分享面板 */
-    const wbout = XLSX.write(wb,{bookType:'xlsx',type:'array',compression:true});
-    const blob = new Blob([wbout],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     const file = new File([blob], fname, {type:blob.type});
+
     const result = await _shareOrDownload(file, fname, {
       title:'沝森纸艺 询价单',
       text:'沝森纸艺手工纸艺立体画 · 询价单 Excel'
@@ -1559,13 +1577,14 @@ async function downloadQuoteExcel(){
     if(typeof gtag==='function'){
       gtag('event','export_excel',{items_count:ids.length,quantity:totalQty});
     }
-    _btnResult(btn, '📊 保存/分享 Excel', result);
+    _btnResult(btn, originalText, result);
   }catch(e){
     console.error(e);
     alert('Excel 生成失败：'+(e&&e.message||'未知错误')+'\n请检查网络后重试。');
-    btn.textContent='📊 保存/分享 Excel'; btn.disabled=false;
+    btn.textContent=originalText; btn.disabled=false;
   }
 }
+
 
 /* ─────── PDF 导出（懒加载 jsPDF + 用 html2canvas 截图） ─────── */
 function _loadJsPDF(){
